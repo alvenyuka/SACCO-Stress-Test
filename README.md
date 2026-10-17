@@ -60,6 +60,7 @@ cd SACCO-Stress-Test
 pip install -r requirements.txt
 python stress_test_engine.py   # console report and output/sacco_stress_test_report.xlsx
 python make_figures.py         # outputs/results.json and the two charts above
+pip install pytest && python -m pytest   # 5 tests, including that a fresh run reproduces outputs/results.json
 ```
 
 On a Windows console, set `PYTHONIOENCODING=utf-8` first: the console report prints box-drawing characters.
