@@ -1,10 +1,12 @@
-# SACCO Stress Test: IFRS 9 expected credit loss for a Kenyan SACCO under three economic scenarios
+# SACCO Stress Test (IFRS 9)
 
-**A Python engine that stress-tests a Kenyan SACCO loan book under base, adverse and severely adverse
-scenarios and reports IFRS 9 expected credit loss by stage, product, branch and sector. On a seeded synthetic
-portfolio of 2,000 loans worth KES 231.9M, expected credit loss rises from KES 1.81M in the base case to KES
-19.27M in the severe scenario, taking the capital ratio from 14.2% to 6.7%, KES 7.68M short of a 10% minimum.
-A test proves a fresh run reproduces every figure on this page.**
+In the severe scenario, expected credit loss rises more than tenfold and capital falls from 14.2% to 6.7%.
+
+| At a glance | |
+|---|---|
+| **Who decides** | A SACCO board and its regulator, before a downturn arrives. |
+| **Result** | Expected credit loss rises from KES 1.81M (base) to KES 19.27M (severe), leaving capital KES 7.68M short of a 10% minimum. |
+| **Proof** | A seeded synthetic portfolio of 2,000 loans worth KES 231.9M, IFRS 9 ECL by stage, product, branch and sector, and a test that reproduces every figure on this page. |
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![tests](https://github.com/alvenyuka/SACCO-Stress-Test/actions/workflows/ci.yml/badge.svg)](https://github.com/alvenyuka/SACCO-Stress-Test/actions/workflows/ci.yml)
@@ -62,6 +64,8 @@ flowchart LR
 | Tests and CI | pytest, GitHub Actions | |
 
 ## Results
+
+A Python engine that stress-tests a Kenyan SACCO loan book under base, adverse and severely adverse scenarios and reports IFRS 9 expected credit loss by stage, product, branch and sector. On a seeded synthetic portfolio of 2,000 loans worth KES 231.9M, expected credit loss rises from KES 1.81M in the base case to KES 19.27M in the severe scenario, taking the capital ratio from 14.2% to 6.7%, KES 7.68M short of a 10% minimum. A test proves a fresh run reproduces every figure on this page.
 
 - 2,000 synthetic loans, KES 231.9M outstanding, generated from seed 42.
 - 3 scenarios weighted 60%, 30% and 10%.
