@@ -1,36 +1,20 @@
 """
-SACCO Loan Portfolio Stress Testing Engine
-==========================================
-A production-grade stress testing tool for SACCO loan portfolios.
-Simulates economic shocks, projects credit losses under Base, Adverse,
-and Severely Adverse scenarios, and outputs IFRS 9-compliant provisioning tables.
+SACCO loan portfolio stress test.
 
-Author: Alven Yuka | CPA Finalist | Accounting Specialist, GIZ
-Target users: SACCO risk managers, SASRA supervisors, DFI credit teams
+Builds a synthetic SACCO loan book, applies three hand-set macro scenarios (Base, Adverse,
+Severely Adverse) to each loan's PD and LGD, and reports expected credit loss (ECL) by IFRS 9 stage,
+product, branch and sector. Loans keep their reporting-date stage under stress (no stage migration).
+
+Author: Alven Yuka | CPA Finalist
 """
 
 import numpy as np
 import os
-import csv
-import json
 from datetime import date, timedelta
-from dataclasses import dataclass, field
-from typing import Optional
-from enum import Enum
-from collections import defaultdict
+from dataclasses import dataclass
 
 
-# ════════════════════════════════════════════════
-# SECTION 1: DATA MODELS
-# ════════════════════════════════════════════════
-
-class RiskGrade(Enum):
-    A = "Current"
-    B = "Watch"
-    C = "Substandard"
-    D = "Doubtful"
-    E = "Loss"
-
+# DATA MODELS
 
 @dataclass
 class Loan:
@@ -62,18 +46,6 @@ class Loan:
         return 1
 
     @property
-    def risk_grade(self) -> RiskGrade:
-        if self.dpd == 0:
-            return RiskGrade.A
-        elif self.dpd <= 30:
-            return RiskGrade.B
-        elif self.dpd <= 90:
-            return RiskGrade.C
-        elif self.dpd <= 180:
-            return RiskGrade.D
-        return RiskGrade.E
-
-    @property
     def loan_to_income(self) -> float:
         if self.monthly_income <= 0:
             return 0
@@ -85,26 +57,16 @@ class Loan:
             return float('inf')
         return self.collateral_value / self.outstanding
 
-    @property
-    def monthly_payment(self) -> float:
-        r = self.rate / 12
-        n = self.term_months
-        if r == 0:
-            return self.principal / n
-        return self.principal * (r * (1 + r)**n) / ((1 + r)**n - 1)
 
-
-# ════════════════════════════════════════════════
-# SECTION 2: SYNTHETIC PORTFOLIO GENERATOR
-# ════════════════════════════════════════════════
+# SYNTHETIC PORTFOLIO GENERATOR
 
 class PortfolioGenerator:
     """
-    Generates a realistic SACCO loan portfolio with correlated features.
-    The correlations mirror actual Kenyan SACCO data:
-    - Higher income → larger loans, more savings, lower DPD
-    - Emergency loans → shorter terms, higher rates, higher DPD
-    - Rural branches → smaller loans, slightly higher default rates
+    Generates a synthetic SACCO loan portfolio. The data is made up, not real SACCO records.
+    Some features are linked on purpose:
+    - Higher income gives larger loans
+    - Emergency loans have shorter terms, higher rates than Development and School Fees loans, and more days past due
+    - Loans that are large relative to income tend to have more days past due
     """
 
     BRANCHES = ["Nairobi CBD", "Westlands", "Mombasa", "Kisumu", "Nakuru",
@@ -220,9 +182,19 @@ class PortfolioGenerator:
         return loans
 
 
-# ════════════════════════════════════════════════
-# SECTION 3: STRESS TESTING ENGINE
-# ════════════════════════════════════════════════
+# STRESS TESTING ENGINE
+
+# Severity score weights: points added per unit of each macro variable.
+# Only the part of a variable on the bad side of its threshold counts.
+GDP_WEIGHT = 2.0              # per percentage point of negative GDP growth
+INFLATION_THRESHOLD = 5       # inflation above this (%) counts as stress
+INFLATION_WEIGHT = 1.0        # per point of inflation above the threshold
+CBR_THRESHOLD = 10            # central bank rate above this (%) counts as stress
+CBR_WEIGHT = 0.5              # per point of CBR above the threshold
+UNEMPLOYMENT_WEIGHT = 1.5     # per point of rise in unemployment
+DEPRECIATION_WEIGHT = 0.3     # per % of shilling depreciation
+AGRI_WEIGHT = 0.8             # per % fall in agricultural output
+
 
 @dataclass
 class MacroScenario:
@@ -239,18 +211,18 @@ class MacroScenario:
 
     @property
     def severity_score(self) -> float:
-        """Composite severity: higher = worse economic conditions."""
-        return (
-            max(0, -self.gdp_growth) * 2 +
-            max(0, self.inflation - 5) * 1 +
-            max(0, self.cbr_rate - 10) * 0.5 +
-            self.unemployment_change * 1.5 +
-            self.shilling_depreciation * 0.3 +
-            max(0, -self.agricultural_shock) * 0.8
-        )
+        """One number for how bad the scenario is: higher = worse."""
+        gdp_points = max(0, -self.gdp_growth) * GDP_WEIGHT
+        inflation_points = max(0, self.inflation - INFLATION_THRESHOLD) * INFLATION_WEIGHT
+        cbr_points = max(0, self.cbr_rate - CBR_THRESHOLD) * CBR_WEIGHT
+        unemployment_points = self.unemployment_change * UNEMPLOYMENT_WEIGHT
+        depreciation_points = self.shilling_depreciation * DEPRECIATION_WEIGHT
+        agri_points = max(0, -self.agricultural_shock) * AGRI_WEIGHT
+        return (gdp_points + inflation_points + cbr_points
+                + unemployment_points + depreciation_points + agri_points)
 
 
-# Define three scenarios aligned with CBK/SASRA stress testing guidelines
+# Three hand-set scenarios. The values are my own assumptions, not taken from CBK or SASRA.
 SCENARIOS = {
     "base": MacroScenario(
         name="Base Case",
@@ -276,26 +248,34 @@ SCENARIOS = {
 }
 
 
+# PD and LGD adjustment constants (all hand-set assumptions)
+DEFAULT_BASE_PD = 0.02        # PD used if a stage/product pair is missing from STAGE_PD
+PD_PER_SEVERITY_POINT = 0.08  # each severity point raises PD by 8%
+LTI_HIGH = 0.5                # loan-to-income above this is high-risk
+LTI_HIGH_MULTIPLIER = 1.3     # PD multiplier for high loan-to-income
+LTI_MEDIUM = 0.3              # loan-to-income above this is medium-risk
+LTI_MEDIUM_MULTIPLIER = 1.1   # PD multiplier for medium loan-to-income
+AGRI_SHOCK_TRIGGER = -10      # agricultural sector is hit when output falls by more than 10%
+AGRI_SECTOR_SENSITIVITY = 2   # agriculture borrowers feel the output fall twice over
+DEPRECIATION_TRIGGER = 10     # trade and transport are hit when the shilling loses more than 10%
+MAX_PD = 0.99                 # cap so PD stays below 100%
+LGD_PER_SEVERITY_POINT = 0.03  # collateral loses value under stress: 3% more LGD per severity point
+MAX_LGD = 0.95                # cap on stressed LGD
+
+
 class StressTestEngine:
     """
-    Applies macroeconomic stress scenarios to a loan portfolio.
+    Applies the macro scenarios to a loan portfolio.
 
-    Methodology:
-    1. Compute baseline transition matrix from current DPD distribution
-    2. Apply scenario-specific shocks to PD, migration rates, and LGD
-    3. Project portfolio quality forward over 12 months
-    4. Calculate IFRS 9 ECL under each scenario
-    5. Compute probability-weighted ECL for regulatory reporting
+    Steps for each scenario:
+    1. Look up a base PD from the loan's IFRS 9 stage and product.
+    2. Scale the PD up for the scenario's severity, the borrower's loan-to-income and the loan's sector.
+    3. Look up a base LGD from collateral cover and scale it up for the severity.
+    4. ECL per loan = PD x LGD x outstanding balance.
+    5. Add up ECL by stage, product, branch and sector, then probability-weight the three scenarios.
+
+    A loan keeps its reporting-date stage in every scenario.
     """
-
-    # Baseline 1-month transition probabilities: illustrative assumptions, not fitted to SACCO data
-    BASELINE_TRANSITIONS = {
-        # From → {To: probability}
-        "Performing":   {"Performing": 0.95, "Watch": 0.04, "Substandard": 0.008, "Default": 0.002},
-        "Watch":        {"Performing": 0.15, "Watch": 0.65, "Substandard": 0.15, "Default": 0.05},
-        "Substandard":  {"Performing": 0.05, "Watch": 0.10, "Substandard": 0.55, "Default": 0.30},
-        "Default":      {"Performing": 0.01, "Watch": 0.02, "Substandard": 0.02, "Default": 0.95},
-    }
 
     # PD parameters by IFRS 9 stage and product
     STAGE_PD = {
@@ -315,8 +295,8 @@ class StressTestEngine:
     }
 
     def __init__(self, portfolio: list[Loan]):
-        self.portfolio = [l for l in portfolio if l.status not in ("Written-Off",)]
-        self.active = [l for l in self.portfolio if l.status in ("Active", "Restructured")]
+        # Only Active and Restructured loans get an ECL; Default and Written-Off loans are left out
+        self.active = [l for l in portfolio if l.status in ("Active", "Restructured")]
         self.results = {}
 
     def _classify_collateral(self, loan: Loan) -> str:
@@ -326,152 +306,110 @@ class StressTestEngine:
             return "partially_secured"
         return "unsecured"
 
+    def _lti_multiplier(self, loan: Loan) -> float:
+        if loan.loan_to_income > LTI_HIGH:
+            return LTI_HIGH_MULTIPLIER
+        if loan.loan_to_income > LTI_MEDIUM:
+            return LTI_MEDIUM_MULTIPLIER
+        return 1.0
+
+    def _sector_multiplier(self, loan: Loan, scenario: MacroScenario) -> float:
+        if loan.sector == "Agriculture" and scenario.agricultural_shock < AGRI_SHOCK_TRIGGER:
+            return 1.0 + abs(scenario.agricultural_shock) / 100 * AGRI_SECTOR_SENSITIVITY
+        if loan.sector in ("Trade", "Transport") and scenario.shilling_depreciation > DEPRECIATION_TRIGGER:
+            return 1.0 + scenario.shilling_depreciation / 100
+        return 1.0
+
     def _get_pd(self, loan: Loan, scenario: MacroScenario) -> float:
-        """Calculate scenario-adjusted PD for a single loan."""
-        base_pd = self.STAGE_PD.get(loan.ifrs9_stage, {}).get(loan.product, 0.02)
+        """Scenario-adjusted probability of default for one loan."""
+        base_pd = self.STAGE_PD.get(loan.ifrs9_stage, {}).get(loan.product, DEFAULT_BASE_PD)
 
-        # Macro adjustments
-        severity = scenario.severity_score
-        macro_multiplier = 1.0 + severity * 0.08  # Each severity point adds 8% to PD
+        macro_multiplier = 1.0 + scenario.severity_score * PD_PER_SEVERITY_POINT
+        lti_multiplier = self._lti_multiplier(loan)
+        sector_multiplier = self._sector_multiplier(loan, scenario)
 
-        # Borrower-specific adjustments
-        lti_adjustment = 1.0
-        if loan.loan_to_income > 0.5:
-            lti_adjustment = 1.3
-        elif loan.loan_to_income > 0.3:
-            lti_adjustment = 1.1
-
-        # Sector vulnerability
-        sector_shock = 1.0
-        if loan.sector == "Agriculture" and scenario.agricultural_shock < -10:
-            sector_shock = 1.0 + abs(scenario.agricultural_shock) / 100 * 2
-        elif loan.sector in ("Trade", "Transport") and scenario.shilling_depreciation > 10:
-            sector_shock = 1.0 + scenario.shilling_depreciation / 100
-
-        adjusted_pd = base_pd * macro_multiplier * lti_adjustment * sector_shock
-        return min(adjusted_pd, 0.99)
+        prob_default = base_pd * macro_multiplier * lti_multiplier * sector_multiplier
+        return min(prob_default, MAX_PD)
 
     def _get_lgd(self, loan: Loan, scenario: MacroScenario) -> float:
-        """Calculate scenario-adjusted LGD."""
+        """Scenario-adjusted loss given default for one loan."""
         base_lgd = self.LGD[self._classify_collateral(loan)]
+        collateral_haircut = 1.0 + scenario.severity_score * LGD_PER_SEVERITY_POINT
+        return min(base_lgd * collateral_haircut, MAX_LGD)
 
-        # Under stress, collateral values decline
-        collateral_haircut = 1.0 + scenario.severity_score * 0.03
-        adjusted_lgd = min(base_lgd * collateral_haircut, 0.95)
-        return adjusted_lgd
+    def stress_one_loan(self, loan: Loan, scenario: MacroScenario) -> dict:
+        """PD, LGD and ECL for one loan under one scenario."""
+        prob_default = self._get_pd(loan, scenario)
+        lgd = self._get_lgd(loan, scenario)
+        ead = loan.outstanding
+        ecl = prob_default * lgd * ead
 
-    def _stress_transitions(self, scenario: MacroScenario) -> dict:
-        """Adjust transition matrix for the scenario."""
-        stressed = {}
-        severity = scenario.severity_score
+        return {
+            "loan_id": loan.loan_id,
+            "member": loan.member_name,
+            "branch": loan.branch,
+            "product": loan.product,
+            "sector": loan.sector,
+            "outstanding": loan.outstanding,
+            "stage": loan.ifrs9_stage,
+            "dpd": loan.dpd,
+            "pd": round(prob_default, 6),
+            "lgd": round(lgd, 4),
+            "ead": ead,
+            "ecl": round(ecl, 2),
+            "provision_rate": round(ecl / ead, 6) if ead > 0 else 0,
+            "collateral_status": self._classify_collateral(loan),
+            "lti": round(loan.loan_to_income, 4),
+        }
 
-        for state, transitions in self.BASELINE_TRANSITIONS.items():
-            stressed[state] = dict(transitions)
-            if state != "Default":
-                # Increase downgrade probability, decrease upgrade probability
-                upgrade_reduction = min(severity * 0.02, 0.5)
-                downgrade_increase = severity * 0.015
+    def summarise_group(self, rows: list) -> dict:
+        """Count, outstanding, ECL and provision rate for a list of loan results."""
+        outstanding = sum(r["outstanding"] for r in rows)
+        ecl = sum(r["ecl"] for r in rows)
+        provision_rate = ecl / outstanding if outstanding > 0 else 0
+        return {
+            "count": len(rows),
+            "outstanding": outstanding,
+            "ecl": ecl,
+            "provision_rate": provision_rate,
+        }
 
-                for target in stressed[state]:
-                    if target == "Default":
-                        stressed[state][target] += downgrade_increase
-                    elif target == "Performing" and state != "Performing":
-                        stressed[state][target] = max(0.001, stressed[state][target] - upgrade_reduction)
+    def summarise_by(self, loan_results: list, column: str) -> dict:
+        """One summary per distinct value of `column` (product, branch or sector)."""
+        summary = {}
+        for value in sorted(set(r[column] for r in loan_results)):
+            rows = [r for r in loan_results if r[column] == value]
+            summary[value] = self.summarise_group(rows)
+        return summary
 
-                # Re-normalise to sum to 1
-                total = sum(stressed[state].values())
-                stressed[state] = {k: v / total for k, v in stressed[state].items()}
-
-        return stressed
-
-    def run_scenario(self, scenario: MacroScenario, horizon_months: int = 12) -> dict:
-        """Run a stress test scenario and project portfolio losses."""
-
-        # Compute loan-level ECL
-        loan_results = []
-        total_outstanding = sum(l.outstanding for l in self.active)
-
-        for loan in self.active:
-            pd = self._get_pd(loan, scenario)
-            lgd = self._get_lgd(loan, scenario)
-            ead = loan.outstanding
-            ecl = pd * lgd * ead
-
-            loan_results.append({
-                "loan_id": loan.loan_id,
-                "member": loan.member_name,
-                "branch": loan.branch,
-                "product": loan.product,
-                "sector": loan.sector,
-                "outstanding": loan.outstanding,
-                "stage": loan.ifrs9_stage,
-                "dpd": loan.dpd,
-                "pd": round(pd, 6),
-                "lgd": round(lgd, 4),
-                "ead": ead,
-                "ecl": round(ecl, 2),
-                "provision_rate": round(ecl / ead, 6) if ead > 0 else 0,
-                "collateral_status": self._classify_collateral(loan),
-                "lti": round(loan.loan_to_income, 4),
-            })
-
-        # Aggregate by stage
+    def summarise_stages(self, loan_results: list, total_outstanding: float) -> dict:
+        """Same summary per IFRS 9 stage, plus average PD and LGD and share of the portfolio."""
         stage_summary = {}
         for stage in [1, 2, 3]:
-            stage_loans = [r for r in loan_results if r["stage"] == stage]
-            outstanding = sum(r["outstanding"] for r in stage_loans)
-            ecl = sum(r["ecl"] for r in stage_loans)
-            stage_summary[f"Stage {stage}"] = {
-                "count": len(stage_loans),
-                "outstanding": outstanding,
-                "ecl": ecl,
-                "provision_rate": ecl / outstanding if outstanding > 0 else 0,
-                "avg_pd": np.mean([r["pd"] for r in stage_loans]) if stage_loans else 0,
-                "avg_lgd": np.mean([r["lgd"] for r in stage_loans]) if stage_loans else 0,
-                "pct_of_portfolio": outstanding / total_outstanding if total_outstanding > 0 else 0,
-            }
+            rows = [r for r in loan_results if r["stage"] == stage]
+            summary = self.summarise_group(rows)
+            summary["avg_pd"] = np.mean([r["pd"] for r in rows]) if rows else 0
+            summary["avg_lgd"] = np.mean([r["lgd"] for r in rows]) if rows else 0
+            summary["pct_of_portfolio"] = (
+                summary["outstanding"] / total_outstanding if total_outstanding > 0 else 0
+            )
+            stage_summary[f"Stage {stage}"] = summary
+        return stage_summary
 
-        # Aggregate by product
-        product_summary = {}
-        for product in set(r["product"] for r in loan_results):
-            prod_loans = [r for r in loan_results if r["product"] == product]
-            outstanding = sum(r["outstanding"] for r in prod_loans)
-            ecl = sum(r["ecl"] for r in prod_loans)
-            product_summary[product] = {
-                "count": len(prod_loans),
-                "outstanding": outstanding,
-                "ecl": ecl,
-                "provision_rate": ecl / outstanding if outstanding > 0 else 0,
-            }
+    def top_10_concentration(self, loan_results: list, total_outstanding: float) -> float:
+        """Share of total outstanding held by the ten largest loans."""
+        if total_outstanding <= 0:
+            return 0
+        balances = sorted([r["outstanding"] for r in loan_results], reverse=True)
+        largest_ten = balances[:10]
+        return sum(largest_ten) / total_outstanding
 
-        # Aggregate by branch
-        branch_summary = {}
-        for branch in set(r["branch"] for r in loan_results):
-            br_loans = [r for r in loan_results if r["branch"] == branch]
-            outstanding = sum(r["outstanding"] for r in br_loans)
-            ecl = sum(r["ecl"] for r in br_loans)
-            branch_summary[branch] = {
-                "count": len(br_loans),
-                "outstanding": outstanding,
-                "ecl": ecl,
-                "provision_rate": ecl / outstanding if outstanding > 0 else 0,
-            }
-
-        # Aggregate by sector
-        sector_summary = {}
-        for sector in set(r["sector"] for r in loan_results):
-            sec_loans = [r for r in loan_results if r["sector"] == sector]
-            outstanding = sum(r["outstanding"] for r in sec_loans)
-            ecl = sum(r["ecl"] for r in sec_loans)
-            sector_summary[sector] = {
-                "count": len(sec_loans),
-                "outstanding": outstanding,
-                "ecl": ecl,
-                "provision_rate": ecl / outstanding if outstanding > 0 else 0,
-            }
-
-        # Portfolio-level metrics
+    def run_scenario(self, scenario: MacroScenario) -> dict:
+        """Run one scenario over the active loans and summarise the losses."""
+        loan_results = [self.stress_one_loan(loan, scenario) for loan in self.active]
+        total_outstanding = sum(l.outstanding for l in self.active)
         total_ecl = sum(r["ecl"] for r in loan_results)
+
         portfolio_metrics = {
             "scenario": scenario.name,
             "probability": scenario.probability,
@@ -480,8 +418,7 @@ class StressTestEngine:
             "total_outstanding": total_outstanding,
             "total_ecl": total_ecl,
             "aggregate_provision_rate": total_ecl / total_outstanding if total_outstanding > 0 else 0,
-            "ecl_to_equity_impact": total_ecl,  # Simplified — would need equity data
-            "top_10_concentration": sum(sorted([r["outstanding"] for r in loan_results], reverse=True)[:10]) / total_outstanding if total_outstanding > 0 else 0,
+            "top_10_concentration": self.top_10_concentration(loan_results, total_outstanding),
             "macro_params": {
                 "gdp_growth": scenario.gdp_growth,
                 "inflation": scenario.inflation,
@@ -494,10 +431,10 @@ class StressTestEngine:
 
         return {
             "portfolio": portfolio_metrics,
-            "stages": stage_summary,
-            "products": product_summary,
-            "branches": branch_summary,
-            "sectors": sector_summary,
+            "stages": self.summarise_stages(loan_results, total_outstanding),
+            "products": self.summarise_by(loan_results, "product"),
+            "branches": self.summarise_by(loan_results, "branch"),
+            "sectors": self.summarise_by(loan_results, "sector"),
             "loan_detail": loan_results,
         }
 
@@ -511,34 +448,39 @@ class StressTestEngine:
             all_results[key] = result
             weighted_ecl += result["portfolio"]["total_ecl"] * scenario.probability
 
+        base_outstanding = all_results["base"]["portfolio"]["total_outstanding"]
+        weighted_rate = weighted_ecl / base_outstanding if base_outstanding > 0 else 0
+
+        components = {}
+        for key, scenario in SCENARIOS.items():
+            scenario_ecl = all_results[key]["portfolio"]["total_ecl"]
+            components[key] = {
+                "ecl": scenario_ecl,
+                "weight": scenario.probability,
+                "contribution": scenario_ecl * scenario.probability,
+            }
+
         all_results["weighted_ecl"] = {
             "total_ecl": weighted_ecl,
-            "provision_rate": weighted_ecl / all_results["base"]["portfolio"]["total_outstanding"]
-            if all_results["base"]["portfolio"]["total_outstanding"] > 0 else 0,
-            "components": {
-                key: {
-                    "ecl": all_results[key]["portfolio"]["total_ecl"],
-                    "weight": SCENARIOS[key].probability,
-                    "contribution": all_results[key]["portfolio"]["total_ecl"] * SCENARIOS[key].probability,
-                }
-                for key in SCENARIOS
-            },
+            "provision_rate": weighted_rate,
+            "components": components,
         }
 
         self.results = all_results
         return all_results
 
 
-# ════════════════════════════════════════════════
-# SECTION 4: REPORT GENERATOR
-# ════════════════════════════════════════════════
+# REPORT GENERATOR
+
+EQUITY_SHARE = 0.15       # assumed equity: 15% of outstanding loans before any losses
+MIN_CAPITAL_RATIO = 0.10  # minimum equity / loans the capital test compares against
+
 
 class ReportGenerator:
     """Generates formatted Excel and console reports from stress test results."""
 
-    def __init__(self, results: dict, portfolio: list[Loan]):
+    def __init__(self, results: dict):
         self.results = results
-        self.portfolio = portfolio
 
     def console_report(self):
         """Print a comprehensive stress test report to console."""
@@ -636,19 +578,22 @@ class ReportGenerator:
                   f"KES {data['ecl']:>8,.0f} "
                   f"{data['provision_rate']:>7.2%}")
 
-        # Capital impact
-        print(f"\n  CAPITAL ADEQUACY IMPACT")
+        # Capital sensitivity
+        print(f"\n  CAPITAL SENSITIVITY (equity assumed {EQUITY_SHARE:.0%} of loans)")
         print(f"  {'─' * (width - 4)}")
         total_outstanding = base["total_outstanding"]
-        assumed_equity = total_outstanding * 0.15  # Assume 15% CAR
+        assumed_equity = total_outstanding * EQUITY_SHARE
         for s_key, s_label in [("base", "Base"), ("adverse", "Adverse"), ("severe", "Severe")]:
             ecl = self.results[s_key]["portfolio"]["total_ecl"]
             equity_after = assumed_equity - ecl
-            car_after = equity_after / total_outstanding * 100 if total_outstanding > 0 else 0
-            breach = "⚠ BELOW 10% MINIMUM" if car_after < 10 else "✓ Adequate"
+            ratio_after = equity_after / total_outstanding if total_outstanding > 0 else 0
+            if ratio_after < MIN_CAPITAL_RATIO:
+                verdict = f"below {MIN_CAPITAL_RATIO:.0%} minimum"
+            else:
+                verdict = f"above {MIN_CAPITAL_RATIO:.0%} minimum"
             print(f"  {s_label:<12} ECL: KES {ecl:>10,.0f}  "
                   f"Equity after: KES {equity_after:>10,.0f}  "
-                  f"CAR: {car_after:>5.1f}%  {breach}")
+                  f"Equity/loans: {ratio_after * 100:>5.1f}%  {verdict}")
 
         print(f"\n{'═' * width}\n")
 
@@ -693,10 +638,9 @@ class ReportGenerator:
         for cell, label, value in kpis:
             ws[cell] = label
             ws[cell].font = Font(bold=True, size=10, color="666666")
-            value_cell = cell[0] + str(int(cell[1:]) + 1) if len(cell) == 2 else cell[:2] + str(int(cell[2:]) + 1)
-            # Place value one row below
-            row = int(cell[1:])
-            ws.cell(row=row, column=ws[cell].column).font = Font(size=9, color="666666")
+            # value goes in the cell directly below its label
+            value_cell = ws.cell(row=ws[cell].row + 1, column=ws[cell].column, value=value)
+            value_cell.font = kpi_font
 
         # Scenario comparison table
         row = 9
@@ -808,7 +752,8 @@ class ReportGenerator:
             c.border = thin_border
 
         sectors = self.results["adverse"]["sectors"]
-        for row_idx, sector in enumerate(sorted(sectors, key=lambda x: sectors[x]["provision_rate"], reverse=True), 3):
+        sector_names = sorted(sectors, key=lambda x: sectors[x]["provision_rate"], reverse=True)
+        for row_idx, sector in enumerate(sector_names, 3):
             data = sectors[sector]
             vals = [sector, data["count"], data["outstanding"], data["ecl"], data["provision_rate"]]
             for col, val in enumerate(vals, 1):
@@ -865,9 +810,7 @@ class ReportGenerator:
         print(f"Stress test report saved to: {filepath}")
 
 
-# ════════════════════════════════════════════════
-# SECTION 5: MAIN EXECUTION
-# ════════════════════════════════════════════════
+# MAIN EXECUTION
 
 if __name__ == "__main__":
     print("=" * 70)
@@ -879,9 +822,11 @@ if __name__ == "__main__":
     print("\n[1/4] Generating synthetic SACCO portfolio...")
     generator = PortfolioGenerator(seed=42)
     portfolio = generator.generate(n_loans=2000)
-    active_count = len([l for l in portfolio if l.status in ("Active", "Restructured")])
-    total_outstanding = sum(l.outstanding for l in portfolio if l.status in ("Active", "Restructured"))
-    default_count = len([l for l in portfolio if l.status == "Default"])
+    active_loans = [l for l in portfolio if l.status in ("Active", "Restructured")]
+    default_loans = [l for l in portfolio if l.status == "Default"]
+    active_count = len(active_loans)
+    default_count = len(default_loans)
+    total_outstanding = sum(l.outstanding for l in active_loans)
     print(f"  Generated: {len(portfolio)} loans")
     print(f"  Active: {active_count} | Default: {default_count}")
     print(f"  Total Outstanding: KES {total_outstanding:,.0f}")
@@ -902,7 +847,7 @@ if __name__ == "__main__":
 
     # Console report
     print("\n[3/4] Generating console report...")
-    reporter = ReportGenerator(results, portfolio)
+    reporter = ReportGenerator(results)
     reporter.console_report()
 
     # Excel report

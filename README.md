@@ -24,7 +24,7 @@ This project answers that: how much would the expected credit loss rise in a dro
 | Scenario | Weight | Severity score | Expected credit loss (KES) | Loss as % of loans | Capital ratio after losses |
 |---|---|---|---:|---:|---:|
 | Base Case | 60% | 2.4 | 1,813,103 | 0.78% | 14.2% |
-| Adverse | 30% | 27.1 | 8,081,951 | 3.49% | 11.5% |
+| Adverse | 30% | 27.1 | 8,081,952 | 3.49% | 11.5% |
 | Severely Adverse | 10% | 57.0 | 19,270,186 | 8.31% | 6.7% (below 10%) |
 | Probability-weighted | | | 5,439,466 | 2.35% | |
 
@@ -43,15 +43,15 @@ Each step is a piece of `stress_test_engine.py` unless stated.
 3. **Give each loan a probability of default.** The **probability of default (PD)** is the chance the borrower fails to repay over the period. It starts from a table by stage and product (for example 2.0% for a Stage 1 Emergency loan), then is scaled up for the scenario and for risky borrowers (`_get_pd`, step 5 below), and capped at 99%.
 4. **Give each loan a loss given default.** The **loss given default (LGD)** is the share of the balance the lender loses if the borrower does default. It is 65% for an unsecured loan, 45% if collateral covers 30% to 80% of the balance, and 25% if it covers 80% or more (`_get_lgd`). It is then raised by 3% for each severity point, because collateral sells for less in a downturn, capped at 95%.
 5. **Define the scenarios.** `MacroScenario` holds six economic inputs: GDP growth, inflation, the central bank rate, change in unemployment, shilling depreciation and an agricultural output shock. The three scenarios (base, adverse, severely adverse) use values I set by hand; they are not taken from a regulator. Each scenario is summarised as one **severity score** (a weighted sum of how far each input is from normal), and that score drives step 3 and step 4. Each severity point raises PD by 8%. Borrowers whose outstanding balance exceeds half a year's income have PD raised by 30% (10% if above 30%). Agricultural loans get a drought uplift when the agricultural shock is worse than -10%, and trade and transport loans get a shilling uplift when depreciation is above 10%.
-6. **Multiply it out.** Expected credit loss for a loan is PD x LGD x **EAD**, where exposure at default (EAD) is the outstanding balance (`run_scenario`). Totals are added up by stage, product, branch and sector.
+6. **Multiply it out.** Expected credit loss for a loan is PD x LGD x **EAD**, where exposure at default (EAD) is the outstanding balance (`stress_one_loan`). Totals are added up by stage, product, branch and sector.
 7. **Weight the scenarios.** `run_all_scenarios` multiplies each scenario's total by its probability and sums them. Under IFRS 9 the provision should reflect a range of outcomes, not only the central one.
 8. **Test capital.** `make_figures.py` takes equity as 15% of the loan book, subtracts each scenario's loss, and divides by the loan book. This is a simplified **capital adequacy ratio**: capital as a share of what the lender has lent. The shortfall is how much extra capital would bring the ratio back to 10%.
-9. **Write the outputs.** `stress_test_engine.py` prints a console report and writes a four-sheet Excel workbook to `output/` (Executive Summary, IFRS 9 Staging, Sector Analysis, Weighted ECL). `make_figures.py` writes `outputs/results.json` and the two charts in `figures/`.
+9. **Write the outputs.** `stress_test_engine.py` prints a console report and writes a four-sheet Excel workbook to `output/` (Executive Summary, IFRS 9 Staging, Sector Analysis, Weighted ECL). The Executive Summary opens with four headline figures (total outstanding, active loans, weighted ECL, weighted provision rate), each under its label. `make_figures.py` writes `outputs/results.json` and the two charts in `figures/`.
 10. **Lock the numbers with tests.** `tests/test_engine.py` re-runs the engine and checks the result against `outputs/results.json`, so the figures above cannot drift from the code.
 
 ## Problems I hit
 
-- **The README claimed loans move between stages under stress, and they do not.** The engine has a method, `_stress_transitions`, that builds a stressed migration matrix, but nothing calls it. A review on 2026-10-18 found that it is defined but never called. Stress raises each loan's PD and LGD, but a Stage 1 loan stays Stage 1. The earlier README was wrong; the claim is removed and the gap is listed under Limits.
+- **The README claimed loans move between stages under stress, and they do not.** An earlier version of the engine had a method that built a stressed migration matrix, but nothing called it; a review on 2026-10-18 found this, and the unused method has since been removed. Stress raises each loan's PD and LGD, but a Stage 1 loan stays Stage 1. The earlier README was wrong; the claim is removed and the gap is listed under Limits.
 - **The console report crashes on a Windows console.** It prints box-drawing characters, and the default cp1252 console cannot encode them. The script wrote its outputs and then failed, so the run looked broken. Setting `PYTHONIOENCODING=utf-8` before running fixes it.
 
 ## Data
@@ -70,7 +70,6 @@ Branch names are Kenyan towns and member names are generic Kenyan names, used on
 - **One PD per loan.** There are no separate 12-month and lifetime PDs and no discounting at the loan's interest rate.
 - **The capital test is a sensitivity, not a regulatory return.** Equity is assumed at 15% of loans, and the denominator is loans rather than risk-weighted assets.
 - **EAD is the outstanding balance only.** Undrawn commitments and early repayment are not modelled.
-- **Parts of the engine file are unused.** Some definitions in `stress_test_engine.py` (the migration matrix above among them) are not part of the calculation that produces these figures.
 
 ## How to run
 

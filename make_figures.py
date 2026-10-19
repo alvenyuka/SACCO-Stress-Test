@@ -13,11 +13,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from stress_test_engine import SCENARIOS, PortfolioGenerator, StressTestEngine  # noqa: E402
+from stress_test_engine import EQUITY_SHARE, SCENARIOS, PortfolioGenerator, StressTestEngine  # noqa: E402
+from stress_test_engine import MIN_CAPITAL_RATIO as MIN_CAR  # noqa: E402
 
 SEED, N_LOANS = 42, 2000
-EQUITY_SHARE = 0.15   # the engine's capital assumption: equity is 15% of outstanding loans before losses
-MIN_CAR = 0.10        # the 10% minimum capital ratio the report tests against
 ORDER = ["base", "adverse", "severe"]
 
 
