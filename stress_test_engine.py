@@ -123,7 +123,9 @@ class PortfolioGenerator:
             days_ago = self.rng.randint(30, 1095)
             disb_date = date.today() - timedelta(days=days_ago)
 
-            # Outstanding: between 10% and 95% of principal (depends on how old the loan is)
+            # Outstanding: principal x (1 - repayment_fraction) x noise (0.8-1.1), floored at 5% of
+            # principal -- a fresh loan with high noise can exceed 100% (observed range on the seed-42
+            # book: ~4.8%-108%, not literally 10%-95%; Phase 2b code-quality audit, 2026-10-29)
             months_elapsed = min(days_ago // 30, term)
             repayment_fraction = months_elapsed / term
             noise = self.rng.uniform(0.8, 1.1)
