@@ -1,6 +1,6 @@
 # SACCO Stress Test
 
-A Python tool that estimates how much a Kenyan savings and credit co-operative could lose on its loans in a downturn, run here on a made-up (synthetic) loan book.
+A Python tool that estimates how much a Kenyan savings and credit co-operative could lose on its loans in a downturn, run here on a synthetic loan book.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![tests](https://github.com/alvenyuka/SACCO-Stress-Test/actions/workflows/ci.yml/badge.svg)](https://github.com/alvenyuka/SACCO-Stress-Test/actions/workflows/ci.yml)
